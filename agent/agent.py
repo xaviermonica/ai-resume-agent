@@ -3,25 +3,19 @@ import sys
 import json
 from loguru import logger
 from typing import Any
-from pydantic_ai import Agent
-from pydantic_ai.models.openai import OpenAIChatModel
+from openrouter import OpenRouter
 from schemas import InputSchema, OutputSchema
 
 SYSTEM_PROMPT = (
     "You are an expert study-notes generator. "
     "Produce structured, exam-ready notes strictly following this schema: title, key_concepts[], important_points[], exam_tips[]. "
     "Rules: Output must be bullet-point only (each item a concise bullet). Do not add extra sections. "
-    "Adapt depth to the requested level: short (very concise bullets), medium (balanced detail), detailed (deeper bullets, but still bullets)."
+    "Adapt depth to the requested level: short (very concise bullets), medium (balanced detail), detailed (deeper bullets, but still bullets). "
+    "Return ONLY a valid JSON object with these exact keys: title, key_concepts, important_points, exam_tips. No markdown, no extra text."
 )
 
-MODEL_NAME = os.getenv("MODEL_NAME", "openai/gpt-oss-20b:free")
-BASE_URL = os.getenv("OPENAI_BASE_URL", "https://openrouter.ai/api/v1")
+MODEL_NAME = os.getenv("MODEL_NAME", "openai/gpt-oss-120b:free")
 API_KEY = os.getenv("OPENROUTER_API_KEY", "")
-
-# Ensure environment for OpenAI-compatible client
-if API_KEY:
-    os.environ["OPENAI_API_KEY"] = API_KEY
-os.environ["OPENAI_BASE_URL"] = BASE_URL
 
 
 def _normalize_bullets(items: list[str]) -> list[str]:
@@ -37,10 +31,6 @@ def _normalize_bullets(items: list[str]) -> list[str]:
 
 
 def _run_once(payload: InputSchema) -> OutputSchema:
-    # Create agent with OpenAIChatModel
-    model = OpenAIChatModel(MODEL_NAME)
-    agent = Agent(model, system_prompt=SYSTEM_PROMPT, retries=1)
-    
     user_prompt = (
         f"Generate study notes for exam type '{payload.exam_type}' with depth '{payload.depth}'. "
         f"Use only bullets. Content:\n\n{payload.content}\n\n"
@@ -48,14 +38,32 @@ def _run_once(payload: InputSchema) -> OutputSchema:
         f"important_points (array of strings), exam_tips (array of strings)."
     )
     
-    res = agent.run_sync(user_prompt)
-    # Parse the response and validate with OutputSchema
-    data = OutputSchema.model_validate_json(res.data if isinstance(res.data, str) else json.dumps(res.data))
-    # Normalize bullets to enforce bullet-only output
-    data.key_concepts = _normalize_bullets(data.key_concepts)
-    data.important_points = _normalize_bullets(data.important_points)
-    data.exam_tips = _normalize_bullets(data.exam_tips)
-    return data
+    with OpenRouter(api_key=API_KEY) as client:
+        response = client.chat.send(
+            model=MODEL_NAME,
+            messages=[
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": user_prompt}
+            ]
+        )
+        
+        # Extract content from response
+        content = response.choices[0].message.content
+        
+        # Clean markdown code blocks if present
+        if content.startswith("```json"):
+            content = content.replace("```json", "").replace("```", "").strip()
+        elif content.startswith("```"):
+            content = content.replace("```", "").strip()
+        
+        # Parse and validate with OutputSchema
+        data = OutputSchema.model_validate_json(content)
+        
+        # Normalize bullets to enforce bullet-only output
+        data.key_concepts = _normalize_bullets(data.key_concepts)
+        data.important_points = _normalize_bullets(data.important_points)
+        data.exam_tips = _normalize_bullets(data.exam_tips)
+        return data
 
 
 def main() -> int:
