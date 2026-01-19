@@ -24,12 +24,6 @@ if API_KEY:
 os.environ["OPENAI_BASE_URL"] = BASE_URL
 
 
-def _build_agent() -> Agent:
-    # Use OpenAIChatModel and rely on OPENAI_BASE_URL env for OpenRouter.
-    model = OpenAIChatModel(MODEL_NAME)
-    return Agent(model=model, system_prompt=SYSTEM_PROMPT)
-
-
 def _normalize_bullets(items: list[str]) -> list[str]:
     norm = []
     for s in items:
@@ -43,13 +37,20 @@ def _normalize_bullets(items: list[str]) -> list[str]:
 
 
 def _run_once(payload: InputSchema) -> OutputSchema:
-    agent = _build_agent()
+    # Create agent with OpenAIChatModel
+    model = OpenAIChatModel(MODEL_NAME)
+    agent = Agent(model, system_prompt=SYSTEM_PROMPT, retries=1)
+    
     user_prompt = (
         f"Generate study notes for exam type '{payload.exam_type}' with depth '{payload.depth}'. "
-        f"Use only bullets. Content:\n\n{payload.content}"
+        f"Use only bullets. Content:\n\n{payload.content}\n\n"
+        f"Return a JSON object with: title (string), key_concepts (array of strings), "
+        f"important_points (array of strings), exam_tips (array of strings)."
     )
-    res = agent.run_sync(user_prompt, result_type=OutputSchema)
-    data = res.data
+    
+    res = agent.run_sync(user_prompt)
+    # Parse the response and validate with OutputSchema
+    data = OutputSchema.model_validate_json(res.data if isinstance(res.data, str) else json.dumps(res.data))
     # Normalize bullets to enforce bullet-only output
     data.key_concepts = _normalize_bullets(data.key_concepts)
     data.important_points = _normalize_bullets(data.important_points)
